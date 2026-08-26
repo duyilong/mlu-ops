@@ -20,18 +20,20 @@
  * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  *************************************************************************/
-#include "cnlog.hpp"
+#include "core/log_core/log_core.h"
+#include "core/log_core/log_project.h"
 
 #include <string>
 #include <mutex>  // NOLINT
 #include <algorithm>
+#include <atomic>
 #include <map>
 #include <iostream>
 #include <fstream>
 #include <sstream>
 
 
-#include "tool.h"
+#include "core/tool.h"
 
 #if defined(WINDOWS) || defined(WIN32)  // used in windows
 
@@ -73,7 +75,7 @@
 namespace mluop {
 namespace logging {
 
-static int getLevelEnvVar(const std::string& str, int default_para = false);
+static int getMaxLogLevelEnvVar(const std::string& str, int default_para = false);
 
 class cnlogSingleton {
  public:
@@ -89,7 +91,17 @@ class cnlogSingleton {
   static inline const std::map<std::string, bool>& module_print_map() {
     return get().module_print_map_;
   }
-  static inline int logLevel() { return get().logLevel_; }
+  static inline int maxLogLevel() {
+    return get().maxLogLevel_.load(std::memory_order_relaxed);
+  }
+  static inline void setMaxLogLevel(int level) {
+    if (level < LOG_ERROR) {
+      level = LOG_ERROR;
+    } else if (level > LOG_DEBUG4) {
+      level = LOG_DEBUG4;
+    }
+    get().maxLogLevel_.store(level, std::memory_order_relaxed);
+  }
   static inline bool g_color_print() { return get().g_color_print_; }
   static inline std::ofstream& logFile() { return get().logFile_; }
   static inline std::ostream& userStream() { return get().userStream_; }
@@ -111,7 +123,7 @@ class cnlogSingleton {
     if (is_only_show_) {
       initLogOnlyShow();
     } else {
-      initLog("mlu_op_auto_log");
+      initLog(kLogFileName);
     }
     cnlogSingletonInitFlag_ = CNLOG_INIT_MAGIC_NUM;
   }
@@ -151,19 +163,15 @@ class cnlogSingleton {
   std::ostream userStream_{std::cout.rdbuf()};  // NOLINT
   bool is_open_log_ = false;
   std::ofstream logFile_;  // which file to save log message.
-  int logLevel_ = getLevelEnvVar("MLUOP_MIN_LOG_LEVEL",
-                                 0);  // only the level GE this will be print.
+  std::atomic<int> maxLogLevel_ = getMaxLogLevelEnvVar(
+      kEnvMaxLogLevel, 0);  // only the level LE this will be print.
   bool is_only_show_ = mluop::getBoolEnvVar(
-      "MLUOP_LOG_ONLY_SHOW", true);  // whether only show on screen.
-  bool g_color_print_ = mluop::getBoolEnvVar("MLUOP_LOG_COLOR_PRINT",
+      kEnvOnlyShow, true);  // whether only show on screen.
+  bool g_color_print_ = mluop::getBoolEnvVar(kEnvColorPrint,
                                              true);  // whether print with color
   const std::map<std::string, bool> module_print_map_{
-      {"MLUOP", mluop::getBoolEnvVar("MLUOP_LOG_PRINT", true)}};
+      {kProjectModuleName, mluop::getBoolEnvVar(kEnvModulePrint, true)}};
 };
-
-static uint64_t warningCnt = 0;  // counts of warning
-static uint64_t errorCnt = 0;    // counts of error
-static int64_t fatalCnt = 0;     // counts of fatal
 
 int cnlogSingleton::cnlogSingletonInitFlag_ = 0;
 
@@ -222,18 +230,13 @@ void clearEnter(std::string* ss) {
  */
 LogMessage::~LogMessage() {
   static std::mutex log_mutex;  // to protect write to file.
-  int log_level = LOG_INFO;
-#ifdef NDEBUG
   if (!releasePrint(module_name_)) {
     return;
   }
-  log_level = cnlogSingleton::logLevel();
+  int max_log_level = cnlogSingleton::maxLogLevel();
+#ifdef NDEBUG
   is_print_tail_ = false;
 #else
-  if (!releasePrint(module_name_)) {
-    return;
-  }
-  log_level = cnlogSingleton::logLevel();
   is_print_tail_ = true;
 #endif
   file_str_ << contex_str_.str();
@@ -259,25 +262,8 @@ LogMessage::~LogMessage() {
     clearEnter(&file_ss);
     clearEnter(&cout_ss);
   }
-  if (logSeverity_ >= log_level) {
+  if (logSeverity_ <= max_log_level) {
     std::lock_guard<std::mutex> lock(log_mutex);
-    switch (logSeverity_) {
-      case LOG_WARNING: {
-        warningCnt++;
-        break;
-      }
-      case LOG_ERROR: {
-        errorCnt++;
-        break;
-      }
-      case LOG_FATAL: {
-        fatalCnt++;
-        break;
-      }
-      default: {
-        break;
-      }
-    }
 #ifndef ANDROID_LOG
     if ((log_module_ == LOG_SAVE_ONLY) || (log_module_ == LOG_SAVE_AND_SHOW)) {
       if (!cnlogSingleton::is_only_show()) {
@@ -295,25 +281,23 @@ LogMessage::~LogMessage() {
     }
 #else
     switch (logSeverity_) {
-      case LOG_INFO: {
-        LOGI("%s", file_ss.c_str());
+      case LOG_ERROR: {
+        LOGE("%s", file_ss.c_str());
         break;
       }
       case LOG_WARNING: {
         LOGW("%s", file_ss.c_str());
         break;
       }
-      case LOG_ERROR: {
-      }
-      case LOG_FATAL: {
-        LOGE("%s", file_ss.c_str());
+      case LOG_INFO: {
+        LOGI("%s", file_ss.c_str());
         break;
       }
-      case LOG_VLOG: {
-        LOGD("%s", file_ss.c_str());
-        break;
-      }
-      case LOG_CNPAPI: {
+      case LOG_CNPAPI:
+      case LOG_DEBUG1:
+      case LOG_DEBUG2:
+      case LOG_DEBUG3:
+      case LOG_DEBUG4: {
         LOGD("%s", file_ss.c_str());
         break;
       }
@@ -327,23 +311,23 @@ LogMessage::~LogMessage() {
 
 inline static auto formatSeverityColor(int logSeverity_) {
   switch (logSeverity_) {
-    case LOG_INFO: {
-      return fmt::fg(fmt::terminal_color::green);
+    case LOG_ERROR: {
+      return fmt::fg(fmt::terminal_color::red);
     }
     case LOG_WARNING: {
       return fmt::fg(fmt::terminal_color::magenta);
     }
-    case LOG_ERROR: {
-      return fmt::fg(fmt::terminal_color::red);
-    }
-    case LOG_FATAL: {
-      return fmt::fg(fmt::terminal_color::red);
-    }
-    case LOG_VLOG: {
-      return fmt::fg(fmt::terminal_color::blue);
+    case LOG_INFO: {
+      return fmt::fg(fmt::terminal_color::green);
     }
     case LOG_CNPAPI: {
       return fmt::fg(fmt::terminal_color::blue);
+    }
+    case LOG_DEBUG1:
+    case LOG_DEBUG2:
+    case LOG_DEBUG3:
+    case LOG_DEBUG4: {
+      return fmt::fg(fmt::terminal_color::cyan);
     }
   }
   // all enum used
@@ -352,23 +336,29 @@ inline static auto formatSeverityColor(int logSeverity_) {
 
 inline static std::string formatSeverityName(int logSeverity_) {
   switch (logSeverity_) {
-    case LOG_INFO: {
-      return "INFO";
+    case LOG_ERROR: {
+      return "ERROR";
     }
     case LOG_WARNING: {
       return "WARNING";
     }
-    case LOG_ERROR: {
-      return "ERROR";
-    }
-    case LOG_FATAL: {
-      return "FATAL";
-    }
-    case LOG_VLOG: {
-      return "VLOG";
+    case LOG_INFO: {
+      return "INFO";
     }
     case LOG_CNPAPI: {
       return "CNPAPI";
+    }
+    case LOG_DEBUG1: {
+      return "DEBUG1";
+    }
+    case LOG_DEBUG2: {
+      return "DEBUG2";
+    }
+    case LOG_DEBUG3: {
+      return "DEBUG3";
+    }
+    case LOG_DEBUG4: {
+      return "DEBUG4";
     }
   }
   // all enum used
@@ -411,11 +401,6 @@ std::string LogMessage::getTime() {
  * @param: switch whether print log message colored to cout_str_.
  */
 void LogMessage::printHead(bool is_colored) {
-#ifndef NDEBUG
-  if (cnlogSingleton::logLevel() == 5) {
-    return;
-  }
-#endif
   // [DATETIME][MLUOP][INFO][PID][Card:i]: xxxx
   cout_str_ << fmt::format(
       "{datetime}[{module}][{severity}][{pid}][Card:{card}]: ",
@@ -423,83 +408,16 @@ void LogMessage::printHead(bool is_colored) {
       fmt::arg("module",
                is_colored
                    ? fmt::to_string(fmt::styled(
-                         "MLU-OPS", fmt::emphasis::bold |
-                                      fmt::fg(fmt::terminal_color::yellow)))
-                   : "MLU-OPS"),
+                         kProjectDisplayName,
+                         fmt::emphasis::bold |
+                             fmt::fg(fmt::terminal_color::yellow)))
+                   : kProjectDisplayName),
       fmt::arg("severity", formatSeverity(logSeverity_, is_colored)),
       fmt::arg("pid", getpid_()), fmt::arg("card", []() {
         int dev_index = -1;
         cnrtGetDevice(&dev_index);
         return dev_index;
       }()));
-#if 0
-  file_str_ << getTime();
-  file_str_ << "[" << module_name_ <<"] ";
-  switch (logSeverity_) {
-    case LOG_INFO: {
-      file_str_ << "[INFO]: ";
-      break;
-    }
-    case LOG_WARNING: {
-      file_str_ << "[WARNING]: ";
-      break;
-    }
-    case LOG_ERROR: {
-      file_str_ << "[ERROR]: ";
-      break;
-    }
-    case LOG_FATAL: {
-      file_str_ << "[FATAL]: ";
-      break;
-    }
-    case LOG_VLOG: {
-      file_str_ << "[VLOG]: ";
-      break;
-    }
-    case LOG_CNPAPI: {
-      file_str_ << "[CNPAPI]: ";
-      break;
-    }
-    default: {
-      break;
-    };
-  }
-  if (is_colored) {
-    cout_str_ << getTime();
-    cout_str_ << HIGHLIGHT << YELLOW << "[" << module_name_ <<"] ";
-    switch (logSeverity_) {
-        case LOG_INFO: {
-          cout_str_ << HIGHLIGHT << GREEN << "[INFO]:" << RESET;
-          break;
-        }
-        case LOG_WARNING: {
-          cout_str_ << HIGHLIGHT << MAGENTA << "[WARNING]:" << RESET;
-          break;
-        }
-        case LOG_ERROR: {
-          cout_str_ << HIGHLIGHT << RED << "[ERROR]:" << RESET;
-          break;
-        }
-        case LOG_FATAL: {
-          cout_str_ << HIGHLIGHT << RED << "[FATAL]:" << RESET;
-          break;
-        }
-        case LOG_VLOG: {
-          cout_str_ << HIGHLIGHT << BLUE << "[VLOG]:" << RESET;
-          break;
-        }
-        case LOG_CNPAPI: {
-          cout_str_ << HIGHLIGHT << BLUE << "[CNPAPI]:" << RESET;
-          break;
-        }
-        default: {
-          break;
-        }
-    }
-  } else {
-    cout_str_ << file_str_.str();
-  }
-#endif
 }
 
 /**
@@ -564,7 +482,15 @@ void LogMessage::printTail(bool is_colored) {
 #endif
 }
 
-int getLevelEnvVar(const std::string& str, int default_para) {
+/**
+ * @brief: get the max log level that is allowed to print from env var
+ *         CNNL_MAX_LOG_LEVEL. Only the log whose level value <= this will be
+ *         printed. Accepts "0".."7" or level names: ERROR, WARNING, API_TRACE,
+ *         INFO, DEBUG(1..4); DEBUGn also accepts "DEBUG-n" and "DEBUG_n", and
+ *         bare "DEBUG" is treated as DEBUG1. Invalid value falls back to
+ *         default_para.
+ */
+int getMaxLogLevelEnvVar(const std::string& str, int default_para) {
   const char* env_raw_ptr = std::getenv(str.c_str());
   if (env_raw_ptr == nullptr) {
     return default_para;
@@ -572,17 +498,38 @@ int getLevelEnvVar(const std::string& str, int default_para) {
   std::string env_var = std::string(env_raw_ptr);
   /// to up case
   std::transform(env_var.begin(), env_var.end(), env_var.begin(), ::toupper);
-  if (env_var == "0" || env_var == "INFO") {
+  if (env_var == "0" || env_var == "ERROR") {
     return 0;
   } else if (env_var == "1" || env_var == "WARNING") {
     return 1;
-  } else if (env_var == "2" || env_var == "ERROR") {
+  } else if (env_var == "2" || env_var == "API_TRACE") {
     return 2;
-  } else if (env_var == "3" || env_var == "FATAL") {
+  } else if (env_var == "3" || env_var == "INFO") {
     return 3;
+  } else if (env_var == "4" || env_var == "DEBUG" || env_var == "DEBUG1" ||
+             env_var == "DEBUG-1" || env_var == "DEBUG_1") {
+    return 4;
+  } else if (env_var == "5" || env_var == "DEBUG2" || env_var == "DEBUG-2" ||
+             env_var == "DEBUG_2") {
+    return 5;
+  } else if (env_var == "6" || env_var == "DEBUG3" || env_var == "DEBUG-3" ||
+             env_var == "DEBUG_3") {
+    return 6;
+  } else if (env_var == "7" || env_var == "DEBUG4" || env_var == "DEBUG-4" ||
+             env_var == "DEBUG_4") {
+    return 7;
   }
   return default_para;
 }
+
+/**
+ * @brief: set the max log level at runtime. Only the log whose level value
+ *         <= level will be printed. Values outside [0, 7] are clamped to the
+ *         nearest bound. Thread-safe.
+ */
+void setMaxLogLevel(int level) { cnlogSingleton::setMaxLogLevel(level); }
+
+int getMaxLogLevel() { return cnlogSingleton::maxLogLevel(); }
 
 }  // namespace logging
 }  // namespace mluop

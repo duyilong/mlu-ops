@@ -24,15 +24,20 @@
 #ifndef CORE_LOGGING_H_
 #define CORE_LOGGING_H_
 
+#include <type_traits>
 #include <utility>
 #include <string>
 #include <limits>
 #include <sstream>
 
-#include "core/cnlog.hpp"
+#include "core/log_core/log_core.h"
 #include "core/macros.h"
 #include "core/util.h"
 #include "mlu_op.h"
+#include "type.h"
+#include "preprocessor.h"
+#include <algorithm>
+
 
 #define LARGE_TENSOR_NUM ((uint64_t)2147483648)
 #define LARGE_TENSOR_SIZE ((uint64_t)2147483648)
@@ -141,6 +146,200 @@
     LOG(ERROR) << api << " Check failed: " #condition ". " __VA_ARGS__; \
     return MLUOP_STATUS_BAD_PARAM;                                      \
   }
+
+
+#define PARAM_CHECK_PTR_NOT_NULL(api, ptr, ...)                                \
+  do {                                                                         \
+    if (ptr == nullptr) {                                                      \
+      LOG(ERROR) << api << " Bad param: " #ptr " cannot be NULL. "             \
+                 << #__VA_ARGS__;                                              \
+      return MLUOP_STATUS_BAD_PARAM;                                           \
+    }                                                                          \
+  } while (0)
+
+#define PARAM_CHECK_PTR_MUST_NULL(api, ptr, ...)                               \
+  do {                                                                         \
+    if (ptr != nullptr) {                                                      \
+      LOG(ERROR) << api                                                        \
+                 << " Bad param: expect argument " #ptr                        \
+                    " to be NULL, but a non-null pointer("                     \
+                 << ptr << ") was provided. " << #__VA_ARGS__;                 \
+      return MLUOP_STATUS_BAD_PARAM;                                           \
+    }                                                                          \
+  } while (0)
+
+#define PARAM_CHECK_DTYPE_SAME(api, dtype1, dtype2, ...)                       \
+  do {                                                                         \
+    if (dtype1 != dtype2) {                                                    \
+      LOG(ERROR) << api                                                        \
+                 << " Bad param: expect " #dtype1 " and " #dtype2 " same,"     \
+                    " but get " #dtype1 "("                                    \
+                 << getNameOfDataType(dtype1) << ") vs " #dtype2 "("           \
+                 << getNameOfDataType(dtype2) << "). " << #__VA_ARGS__;        \
+      return MLUOP_STATUS_BAD_PARAM;                                           \
+    }                                                                          \
+  } while (0)
+
+template <typename T, typename U, typename... Args>
+bool is_in_list(const T &value, std::initializer_list<U> list) {
+  return std::find_if(list.begin(), list.end(), [&value](const auto &elem) {
+           return elem == value;
+         }) != list.end();
+}
+
+/**
+  ctx_msg: 上下文说明信息，用于说明一些额外的信息，辅助用户了解参数具体情况
+ */
+#define PARAM_CHECK_DTYPE_SUPPORT(api, dtype, ctx_msg, ...)                    \
+  do {                                                                         \
+    if (!is_in_list(dtype, {__VA_ARGS__})) {                                   \
+      if constexpr (MLUOP_PP_NUM_ARGS(__VA_ARGS__) > 1) {                      \
+        LOG(ERROR) << api                                                      \
+                   << " Bad param: "                                           \
+                      "expect " #dtype " be one of {" #__VA_ARGS__ "}, "       \
+                      "but " #dtype "("                                        \
+                   << getNameOfDataType(dtype) << ") was provided. " #ctx_msg; \
+      } else {                                                                 \
+        LOG(ERROR) << api                                                      \
+                   << " Bad param: "                                           \
+                      "expect " #dtype " be " #__VA_ARGS__ ", "                \
+                      "but " #dtype "("                                        \
+                   << getNameOfDataType(dtype) << ") was provided. " #ctx_msg; \
+      }                                                                        \
+      return MLUOP_STATUS_BAD_PARAM;                                           \
+    }                                                                          \
+  } while (0)
+
+#define PARAM_CHECK_DTYPE_NOT_SUPPORT(api, dtype, ctx_msg, ...)                \
+  do {                                                                         \
+    if (is_in_list(dtype, {__VA_ARGS__})) {                                    \
+      if constexpr (MLUOP_PP_NUM_ARGS(__VA_ARGS__) > 1) {                      \
+        LOG(ERROR) << api << " Bad param: " #dtype " in {" << #__VA_ARGS__     \
+                   << "} are not supported. "                                  \
+                      "but " #dtype "("                                        \
+                   << getNameOfDataType(dtype) << ") was provided. " #ctx_msg; \
+      } else {                                                                 \
+        LOG(ERROR) << api                                                      \
+                   << "Bad param: " #dtype "cannot be " #__VA_ARGS__           \
+                      ". " #ctx_msg;                                           \
+      }                                                                        \
+      return MLUOP_STATUS_BAD_PARAM;                                           \
+    }                                                                          \
+  } while (0)
+
+///////////////////
+// 一套PARAM_CHECK_TYPE_SAME、PARAM_CHECK_TYPE_SUPPORT、PARAM_CHECK_TYPE_NOT_SUPPORT
+// 支持dtype和layout检查
+template <typename T> bool IsTypeSame(T v1, T v2) {
+  static_assert(
+      std::is_same_v<T, mluOpDataType_t> ||
+          std::is_same_v<T, mluOpTensorLayout_t>,
+      "Check TypeSame only support mluOpDataType_t or mluOpTensorLayout_t");
+  return v1 == v2;
+}
+
+template <typename T> std::string GetNameOfEnumType(T t) {
+  if constexpr (std::is_same_v<T, mluOpDataType_t>) {
+    return mluOpGetNameOfDataType(t);
+  } else if constexpr (std::is_same_v<T, mluOpTensorLayout_t>) {
+    return mluOpGetNameOfTensorLayout(t);
+  }
+  static_assert(
+      sizeof(T) == 0,
+      "GetNameOfEnumType only support mluOpDataType_t or mluOpTensorLayout_t");
+}
+
+#define PARAM_CHECK_TYPE_SAME(api, type1, type2, ...)                          \
+  do {                                                                         \
+    if (!IsTypeSame(type1, type2)) {                                           \
+      LOG(ERROR) << api                                                        \
+                 << " Bad param: "                                             \
+                    "expect " #type1 " and " #type2 " same type. "             \
+                    "but " #type1 "("                                          \
+                 << type1 << ", " << GetNameOfEnumType(type1)                  \
+                 << ") "                                                       \
+                    "vs " #type2 "("                                           \
+                 << type2 << ", " << GetNameOfEnumType(type2)                  \
+                 << ") was provided. " #__VA_ARGS__;                           \
+      return MLUOP_STATUS_BAD_PARAM;                                           \
+    }                                                                          \
+  } while (0)
+
+#define PARAM_CHECK_TYPE_SUPPORT(api, type, ...)                               \
+  do {                                                                         \
+    if (!is_in_list(type, {__VA_ARGS__})) {                                    \
+      if constexpr (MLUOP_PP_NUM_ARGS(__VA_ARGS__) > 1) {                      \
+        LOG(ERROR) << api                                                      \
+                   << " Bad param: "                                           \
+                      "expect " #type " be one of {" #__VA_ARGS__ "}, "        \
+                      "but " #type "("                                         \
+                   << type << ", " << GetNameOfEnumType(type)                  \
+                   << ") was provided. "                                       \
+      } else {                                                                 \
+        LOG(ERROR) << api                                                      \
+                   << " Bad param: "                                           \
+                      "expect " #type " be " #__VA_ARGS__ ", but " #type "("   \
+                   << type << ", " << GetNameOfEnumType(type)                  \
+                   << ") was provided. "                                       \
+      }                                                                        \
+      return MLUOP_STATUS_BAD_PARAM;                                           \
+    }                                                                          \
+  } while (0)
+
+#define PARAM_CHECK_TYPE_NOT_SUPPORT(api, type, ...)                           \
+  do {                                                                         \
+    if (is_in_list(type, {__VA_ARGS__})) {                                     \
+      if constexpr (MLUOP_PP_NUM_ARGS(__VA_ARGS__)) {                          \
+        LOG(ERROR) << api                                                      \
+                   << " Bad param: " #type " in {" #__VA_ARGS__                \
+                      "} are not allowed, "                                    \
+                      " but " #type "("                                        \
+                   << type << ", " << GetNameOfEnumType(type)                  \
+                   << ") was provided. ";                                      \
+      } else {                                                                 \
+        LOG(ERROR) << api << " Bad param: " #type " cannot be " #__VA_ARGS__;  \
+      }                                                                        \
+      return MLUOP_STATUS_BAD_PARAM;                                           \
+    }                                                                          \
+  } while (0)
+
+#define PARAM_CHECK_DIM_RANGE(api, dim, condition, msg)                        \
+  do {                                                                         \
+    if (!condition) {                                                          \
+      LOG(ERROR) << api << " Bad param: " #dim " expect: " #condition ", but " \
+                 << dim << " is provided. " << msg;                            \
+      return MLUOP_STATUS_BAD_PARAM;                                           \
+    }                                                                          \
+  } while (0)
+
+#define PARAM_CHECK_DIM_SAME(api, msg, dim1, dim2, ...)                        \
+  do {                                                                         \
+    const auto &_mluop_dim_base = (dim1);                                      \
+    const auto _mluop_dims[] = {dim2, ##__VA_ARGS__};                          \
+    size_t _mluop_dims_size = sizeof(_mluop_dims) / sizeof(_mluop_dims[0]);    \
+    auto get_dim_string = [_mluop_dim_base, _mluop_dims, _mluop_dims_size]() { \
+      std::ostringstream oss;                                                  \
+      oss << "{" << _mluop_dim_base << ", ";                                   \
+      for (size_t i = 0; i < _mluop_dims_size; ++i) {                          \
+        oss << _mluop_dims[i];                                                 \
+        if (i + 1 < _mluop_dims_size) {                                        \
+          oss << ", ";                                                         \
+        }                                                                      \
+      }                                                                        \
+      oss << "}";                                                              \
+      return oss.str();                                                        \
+    };                                                                         \
+    for (size_t _i = 0; _i < sizeof(_mluop_dims) / sizeof(_mluop_dims[0]);     \
+         ++_i) {                                                               \
+      if (!(_mluop_dims[_i] == _mluop_dim_base)) {                             \
+        LOG(ERROR) << api << " Bad param: " << msg                             \
+                   << " expect {" #dim1 ", " #dim2 ", " #__VA_ARGS__           \
+                      "} all same, but get "                                   \
+                   << get_dim_string() << ".";                                 \
+        return MLUOP_STATUS_BAD_PARAM;                                         \
+      }                                                                        \
+    }                                                                          \
+  } while (0)
 
 // CHECK_EQ/NE/... with return value.
 #define PARAM_CHECK_EQ(api, val1, val2, ...)                              \

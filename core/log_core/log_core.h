@@ -20,8 +20,8 @@
  * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  *************************************************************************/
-#ifndef CORE_CNLOG_HPP_
-#define CORE_CNLOG_HPP_
+#ifndef CORE_LOG_CORE_LOG_CORE_H_
+#define CORE_LOG_CORE_LOG_CORE_H_
 
 #include <sstream>
 #include <iostream>
@@ -71,14 +71,22 @@ namespace logging {
 #endif
 
 /**
- * @brief: define the six levels of the log.
+ * @brief: define the 8 levels of the log. The smaller the value, the more
+ *         important the level. Only the levels with value <= MAX_LOG_LEVEL
+ *         will be printed.
  */
-#define LOG_INFO 0
+#define LOG_ERROR 0
 #define LOG_WARNING 1
-#define LOG_ERROR 2
-#define LOG_FATAL 3
-#define LOG_VLOG 4
-#define LOG_CNPAPI 5
+#define LOG_CNPAPI 2
+#define LOG_INFO 3
+#define LOG_DEBUG1 4
+#define LOG_DEBUG2 5
+#define LOG_DEBUG3 6
+#define LOG_DEBUG4 7
+
+
+#define LOG_FATAL LOG_ERROR  // TODO: temporary alias for LOG_ERROR, to be removed
+#define LOG_VLOG 4  // TODO: temporary alias for LOG_DEBUG1, to be removed
 
 /**
  * @brief: define the interface of the log system.
@@ -86,31 +94,6 @@ namespace logging {
 #define CLOG(module, severity)                                               \
   LogMessage(__FILE__, __LINE__, LOG_SAVE_AND_SHOW, LOG_##severity, #module, \
              true, true, true, true)                                         \
-      .stream()
-
-#define DCLOG(module, severity)                                              \
-  LogMessage(__FILE__, __LINE__, LOG_SAVE_AND_SHOW, LOG_##severity, #module, \
-             true, true, true, false)                                        \
-      .stream()
-
-#define PLOG(module, severity)                                                \
-  LogMessage("", 0, LOG_SAVE_AND_SHOW, LOG_##severity, #module, false, false, \
-             true, true)                                                      \
-      .stream()
-
-#define DPLOG(module, severity)                                               \
-  LogMessage("", 0, LOG_SAVE_AND_SHOW, LOG_##severity, #module, false, false, \
-             true, false)                                                     \
-      .stream()
-
-#define SCOUT(module, severity)                                               \
-  LogMessage("", 0, LOG_SAVE_AND_SHOW, LOG_##severity, #module, false, false, \
-             false, true)                                                     \
-      .stream()
-
-#define DSCOUT(module, severity)                                              \
-  LogMessage("", 0, LOG_SAVE_AND_SHOW, LOG_##severity, #module, false, false, \
-             false, false)                                                    \
       .stream()
 
 /**
@@ -161,7 +144,20 @@ class LogMessage {
   void printTail(bool is_colored);
 };
 
+/**
+ * @brief: set the max log level at runtime. Only the log whose level value
+ *         <= level will be printed. Values outside [0, 7] are clamped to the
+ *         nearest bound. Thread-safe.
+ */
+void setMaxLogLevel(int level);
+
+/**
+ * @brief: get the max log level that is currently allowed to print.
+ *         Thread-safe.
+ */
+int getMaxLogLevel();
+
 }  // namespace logging
 }  // namespace mluop
 
-#endif  // CORE_CNLOG_HPP_
+#endif  // CORE_LOG_CORE_LOG_CORE_H_
