@@ -47,13 +47,24 @@ set(CMAKE_FIND_LIBRARY_SUFFIXES .a ${CMAKE_FIND_LIBRARY_SUFFIXES})
 
 find_package(Protobuf)
 find_package(Eigen3 REQUIRED)
-if(NOT ${EIGEN3_INCLUDE_DIRS})
-  if( EXISTS "/usr/include/eigen3")
+# NOTE: use `if(TARGET Eigen3::Eigen)` rather than `if(NOT ${EIGEN3_INCLUDE_DIRS})`.
+# The latter expands to `if(NOT "")` when the var is empty/undefined, which CMake
+# evaluates as FALSE and silently skips the whole block (leaving the include dirs
+# empty). Config-mode find_package defines only the imported target, so recover
+# include dirs from it directly.
+if(TARGET Eigen3::Eigen)
+  get_target_property(LIBEIGEN3_INCLUDE_DIRS Eigen3::Eigen INTERFACE_INCLUDE_DIRECTORIES)
+endif()
+if(NOT LIBEIGEN3_INCLUDE_DIRS)
+  if(EIGEN3_INCLUDE_DIRS)
+    # Module mode: find_package populated EIGEN3_INCLUDE_DIRS directly.
+    set(LIBEIGEN3_INCLUDE_DIRS ${EIGEN3_INCLUDE_DIRS})
+  elseif(EXISTS "/usr/include/eigen3")
     set(LIBEIGEN3_INCLUDE_DIRS "/usr/include/eigen3")
   elseif(EXISTS "/usr/local/include/eigen3")
     set(LIBEIGEN3_INCLUDE_DIRS "/usr/local/include/eigen3")
   else()
-    message( FATAL_ERROR "Cannot find eigen3, CMake will exit." )
+    message(FATAL_ERROR "Cannot find eigen3, CMake will exit.")
   endif()
 endif()
 # FindProtobuf will generate important variables (could be overrided):
@@ -190,6 +201,11 @@ target_include_directories(mluop_pb_gtest_obj PRIVATE ${MLUOP_PB_GTEST_INCLUDE} 
 add_dependencies(mluop_pb_gtest_obj mluop_build_proto)
 add_executable(mluop_gtest $<TARGET_OBJECTS:mluop_pb_gtest_obj>)
 target_link_libraries(mluop_pb_gtest_obj PRIVATE fmt::fmt)
+# logging.h 无条件 include log_engine.h → log_callback_sink.h → spdlog 头，
+# 故编译 pb_gtest 源文件需要 spdlog include（与 fmt 同模式，对齐顶层）。
+if (TARGET spdlog::spdlog)
+  target_link_libraries(mluop_pb_gtest_obj PRIVATE spdlog::spdlog)
+endif()
 target_link_libraries(mluop_gtest mluops)
 target_link_libraries(mluop_gtest zstd)
 set(targets_mluop_gtest mluop_gtest)
@@ -197,6 +213,9 @@ set(targets_mluop_gtest mluop_gtest)
 message(STATUS "EXTRA_LIBS: ${EXTRA_LIBS}")
 foreach(target_gtest ${targets_mluop_gtest})
   target_link_libraries(${target_gtest} fmt::fmt)
+  if (TARGET spdlog::spdlog)
+    target_link_libraries(${target_gtest} spdlog::spdlog)
+  endif()
   target_link_libraries(${target_gtest} mluop_gtest_kernels)
   target_link_libraries(${target_gtest} -Wl,--no-as-needed cnbin -Wl,--as-needed)
   target_link_libraries(${target_gtest} cnrt cndev cndrv pthread gtest_shared stdc++ m dl)
@@ -229,6 +248,11 @@ add_library(mluop_api_gtest_obj OBJECT ${MLUOP_API_TEST_DIR} ${MLUOP_API_GTEST_D
 target_include_directories(mluop_api_gtest_obj PRIVATE ${MLUOP_API_GTEST_INCLUDE})
 add_executable(mluop_api_gtest $<TARGET_OBJECTS:mluop_api_gtest_obj>)
 target_link_libraries(mluop_api_gtest mluops)
+# api_gtest 源文件 include logging.h → 需要 spdlog include（与 fmt 同模式，对齐顶层）。
+if (TARGET spdlog::spdlog)
+  target_link_libraries(mluop_api_gtest_obj PRIVATE spdlog::spdlog)
+  target_link_libraries(mluop_api_gtest spdlog::spdlog)
+endif()
 target_link_libraries(mluop_api_gtest cnrt cndev cndrv pthread gtest_shared stdc++ m dl)
 target_link_libraries(mluop_api_gtest ${LIBXML2_LIBRARIES} ${EXTRA_LIBS})
 set_target_properties(mluop_api_gtest

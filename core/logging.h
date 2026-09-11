@@ -30,7 +30,7 @@
 #include <limits>
 #include <sstream>
 
-#include "core/log_core/log_core.h"
+#include "core/log_core/log_engine.h"
 #include "core/macros.h"
 #include "core/util.h"
 #include "mlu_op.h"
@@ -42,7 +42,23 @@
 #define LARGE_TENSOR_NUM ((uint64_t)2147483648)
 #define LARGE_TENSOR_SIZE ((uint64_t)2147483648)
 
-#define LOG(severity) mluop::logging::CLOG(MLUOP, severity)
+// SEV_ 映射表：旧宏层等级 token（ERROR/WARNING/CNPAPI/INFO/DEBUG1..4/FATAL/VLOG）
+// 到新枚举 Severity 常量（kError..kDebug4 / kFatal / kVlog）的显式映射。数值 1:1
+// 恒等，但显式落表便于日后 CNPAPI/API_TRACE 统一时单点修改。
+#define SEV_ERROR kError
+#define SEV_WARNING kWarning
+#define SEV_CNPAPI kCnpapi
+#define SEV_INFO kInfo
+#define SEV_DEBUG1 kDebug1
+#define SEV_DEBUG2 kDebug2
+#define SEV_DEBUG3 kDebug3
+#define SEV_DEBUG4 kDebug4
+#define SEV_FATAL kFatal
+#define SEV_VLOG kVlog
+
+#define LOG(severity)                                                   \
+  mluop::log::LogMessage(__FILE__, __LINE__,                            \
+                         mluop::log::Severity::SEV_##severity).stream()
 
 #define TOKENPASTE(x, y, z) x##y##z
 #define TOKENPASTE2(x, y, z) TOKENPASTE(x, y, z)
@@ -50,7 +66,7 @@
 #define LOG_FIRST_N(severity, n)                                            \
   static std::atomic<int> TOKENPASTE2(LOG_, __LINE__, _OCCURRENCES)(0);     \
   if (MLUOP_PREDICT_FALSE(TOKENPASTE2(LOG_, __LINE__, _OCCURRENCES)++ < n)) \
-  mluop::logging::CLOG(MLUOP, severity)
+  LOG(severity)
 
 // CHECK with a error if condition is not true.
 #define CHECK(condition, ...)                                    \
