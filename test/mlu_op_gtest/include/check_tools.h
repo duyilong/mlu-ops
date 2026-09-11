@@ -30,25 +30,30 @@
 #define unlikely(x) __builtin_expect(!!(x), 0)
 
 namespace {  // NOLINT
-std::string fmt() { return ""; }
+// 格式化辅助：命名 GtestFormat 避免与 spdlog/fmt 引入的全局 `namespace fmt` 冲突。
+// 同 TU 中若存在函数 `fmt`，spdlog 头内部 `fmt::format` 的限定名查找会歧义（函数 vs
+// 命名空间），导致编译失败——故弃用旧名 `fmt`。
+std::string GtestFormat() { return ""; }
 template <typename lhs, typename... T>
-std::string fmt(lhs first, T... args) {
+std::string GtestFormat(lhs first, T... args) {
   std::ostringstream oss;
-  oss << first << fmt(args...);
+  oss << first << GtestFormat(args...);
   return oss.str();
 }
 }  // namespace
 
 #define GTEST_CHECK(condition, ...)                                          \
   if (unlikely(!(condition))) {                                              \
-    ADD_FAILURE() << fmt("Check failed: ", #condition, ". ", ##__VA_ARGS__); \
+    ADD_FAILURE() << GtestFormat("Check failed: ", #condition, ". ",         \
+                                 ##__VA_ARGS__);                             \
     throw std::invalid_argument(std::string(__FILE__) + " +" +               \
                                 std::to_string(__LINE__));                   \
   }
 
 #define GTEST_WARNING(condition, ...)                                     \
   if (unlikely(!(condition))) {                                           \
-    LOG(WARNING) << "Check failed: " #condition ". " << fmt(__VA_ARGS__); \
+    LOG(WARNING) << "Check failed: " #condition ". "                      \
+                 << GtestFormat(__VA_ARGS__);                             \
   }
 
 #endif  // TEST_MLU_OP_GTEST_INCLUDE_CHECK_TOOLS_H_
