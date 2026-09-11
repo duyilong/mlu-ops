@@ -58,13 +58,14 @@ namespace log {
 
 namespace {
 
-// 读环境变量并解析为最高可打印级别；未设置或非法回落 default_para。
-// 引擎存活标志（对照旧引擎 cnlogSingletonInitFlag_）：构造置 1、析构清 0。
-// 文件级静态原子，进程退出前可安全读取；LogMessage 析构据此在引擎已销毁
-// 时跳过发射，避免退出期后台线程/全局析构打日志的 use-after-free。
+// 引擎存活标志（对照旧引擎 cnlogSingletonInitFlag_）：默认=存活（1），仅 ~LogEngine
+// 置 0（已析构）。文件级静态原子，进程退出前可安全读取；LogMessage 析构据此在引擎
+// 已销毁时跳过发射（不触碰 instance()），避免退出期后台线程/全局析构打日志的
+// use-after-free。默认=存活使首条日志经 instance() 按需构造引擎，开箱即有日志。
 constexpr int kLogEngineAliveMagic = 1;
-std::atomic<int> g_log_engine_alive_flag = 0;
+std::atomic<int> g_log_engine_alive_flag = kLogEngineAliveMagic;
 
+// 读环境变量并解析为最高可打印级别；未设置或非法回落 default_para。
 int maxLogLevelFromEnv(const char* env_name, int default_para) {
   const char* raw = std::getenv(env_name);
   if (raw == nullptr) {
